@@ -101,16 +101,94 @@ export class WebSocketSerial {
 	}
 
 	/**
-	 * Disconnect from bridge server
+	 * Disconnect from serial port only (keeps WebSocket bridge connection alive)
+	 */
+	async disconnectPort(): Promise<void> {
+		if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+			// Send disconnect message to bridge server to close the serial port
+			return new Promise((resolve) => {
+				const messageHandler = (event: MessageEvent) => {
+					try {
+						const message = JSON.parse(event.data);
+						if (message.type === 'disconnected') {
+							console.log('✓ Serial port released (bridge still connected)');
+							this.ws?.removeEventListener('message', messageHandler);
+							// DO NOT close WebSocket - keep it alive for next connection
+							this.readBuffer = [];
+							this.responseCallbacks.clear();
+							resolve();
+						}
+					} catch (error) {
+						console.error('Disconnect message parse error:', error);
+					}
+				};
+
+				this.ws.addEventListener('message', messageHandler);
+				this.ws.send(JSON.stringify({ type: 'disconnect' }));
+
+				// Timeout fallback in case the bridge doesn't respond
+				setTimeout(() => {
+					if (this.ws) {
+						this.ws.removeEventListener('message', messageHandler);
+					}
+					this.readBuffer = [];
+					this.responseCallbacks.clear();
+					resolve();
+				}, 2000);
+			});
+		}
+	}
+
+	/**
+	 * Disconnect from bridge server and close the serial port
 	 */
 	async disconnect(): Promise<void> {
-		if (this.ws) {
-			this.ws.close();
-			this.ws = null;
+		if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+			// Send disconnect message to bridge server to close the serial port
+			return new Promise((resolve) => {
+				const messageHandler = (event: MessageEvent) => {
+					try {
+						const message = JSON.parse(event.data);
+						if (message.type === 'disconnected') {
+							console.log('✓ Serial port released');
+							this.ws?.removeEventListener('message', messageHandler);
+							this.ws?.close();
+							this.ws = null;
+							this.isConnected = false;
+							this.readBuffer = [];
+							this.responseCallbacks.clear();
+							resolve();
+						}
+					} catch (error) {
+						console.error('Disconnect message parse error:', error);
+					}
+				};
+
+				this.ws.addEventListener('message', messageHandler);
+				this.ws.send(JSON.stringify({ type: 'disconnect' }));
+
+				// Timeout fallback in case the bridge doesn't respond
+				setTimeout(() => {
+					if (this.ws) {
+						this.ws.removeEventListener('message', messageHandler);
+						this.ws.close();
+						this.ws = null;
+					}
+					this.isConnected = false;
+					this.readBuffer = [];
+					this.responseCallbacks.clear();
+					resolve();
+				}, 2000);
+			});
+		} else {
+			if (this.ws) {
+				this.ws.close();
+				this.ws = null;
+			}
+			this.isConnected = false;
+			this.readBuffer = [];
+			this.responseCallbacks.clear();
 		}
-		this.isConnected = false;
-		this.readBuffer = [];
-		this.responseCallbacks.clear();
 	}
 
 	/**
@@ -306,17 +384,69 @@ export class WebSocketSerial {
 	/**
 	 * Scan for servos
 	 */
-	async scanServos(maxId = 6): Promise<number[]> {
+	async scanServos(maxId = 16, stopOnFirst = true): Promise<number[]> {
 		const foundServos: number[] = [];
 
+		console.log(`🔍 Scanning for servos (IDs 1-${maxId})...`);
 		for (let id = 1; id <= maxId; id++) {
+			console.log(`  Pinging ID ${id}...`);
 			const online = await this.ping(id);
 			if (online) {
+				console.log(`  ✓ Found servo at ID ${id}`);
 				foundServos.push(id);
+
+				// Stop after finding first servo (pairing mode - only one servo should be connected)
+				if (stopOnFirst) {
+					console.log(`  ⚡ Stopping scan (found first servo)`);
+					break;
+				}
+			} else {
+				console.log(`  ✗ No servo at ID ${id}`);
 			}
 		}
 
+		console.log(`🔍 Scan complete. Found ${foundServos.length} servo(s):`, foundServos);
 		return foundServos;
+	}
+
+	/**
+	 * Scan for servos with multi-baud auto-discovery
+	 * Tries common baud rates automatically
+	 */
+	async scanServosMultiBaud(portPath: string, maxId = 16): Promise<{foundIds: number[], baudRate: number} | null> {
+		const baudRates = [1000000, 115200, 57600, 9600];
+
+		console.log(`🔍 Multi-baud servo discovery starting...`);
+		console.log(`   Trying baud rates:`, baudRates);
+
+		for (const baud of baudRates) {
+			console.log(`\n🔌 Trying ${baud} baud...`);
+
+			try {
+				// Connect at this baud rate
+				await this.selectPort(portPath, baud);
+
+				// Scan for servos
+				const foundIds = await this.scanServos(maxId);
+
+				if (foundIds.length > 0) {
+					console.log(`\n✅ SUCCESS! Found ${foundIds.length} servo(s) at ${baud} baud`);
+					return { foundIds, baudRate: baud };
+				}
+
+				console.log(`   No servos found at ${baud} baud, trying next...`);
+
+				// Close port before trying next baud
+				await this.disconnectPort();
+
+			} catch (error) {
+				console.error(`   Error at ${baud} baud:`, error);
+				// Continue to next baud rate
+			}
+		}
+
+		console.log(`\n❌ No servos detected at any baud rate`);
+		return null;
 	}
 
 	/**
@@ -429,6 +559,15 @@ export class WebSocketSerial {
 
 		const packet = createWritePacket(currentId, MemoryAddress.ID, [newId]);
 		await this.sendAndWait(packet, currentId);
+	}
+
+	async writeAmax(id: number, amax: number): Promise<void> {
+		if (amax < 0 || amax > 254) {
+			throw new Error('Amax must be between 0 and 254');
+		}
+
+		const packet = createWritePacket(id, MemoryAddress.AMAX, [amax]);
+		await this.sendAndWait(packet, id);
 	}
 
 	/**

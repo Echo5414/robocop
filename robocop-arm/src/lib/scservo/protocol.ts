@@ -67,7 +67,10 @@ export enum MemoryAddress {
 	ASYNC_WRITE_FLAG = 64,
 	SERVO_STATUS = 65,
 	MOVING = 66,
-	PRESENT_CURRENT = 69      // 2 bytes
+	PRESENT_CURRENT = 69,     // 2 bytes
+
+	// Additional DEFAULT area registers
+	AMAX = 85                 // Acceleration max
 }
 
 /**

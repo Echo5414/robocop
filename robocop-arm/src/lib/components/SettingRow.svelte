@@ -25,28 +25,30 @@
 	}: Props = $props();
 
 	// Get or create the dropdown manager context
-	type DropdownManager = { current: string | null };
+	// Use a class with $state for proper Svelte 5 reactivity
+	class DropdownManager {
+		current = $state<string | null>(null);
+	}
 
 	let dropdownManager: DropdownManager;
 
 	if (hasContext('dropdownManager')) {
-		dropdownManager = getContext<DropdownManager>('dropdownManager');
+		dropdownManager = getContext('dropdownManager');
 	} else {
-		dropdownManager = { current: null };
+		dropdownManager = new DropdownManager();
 		setContext('dropdownManager', dropdownManager);
 	}
 
 	// Generate unique ID for this dropdown
 	const dropdownId = `dropdown-${Math.random().toString(36).substr(2, 9)}`;
 
-	let isDropdownOpen = $state(false);
+	let isDropdownOpen = $derived(dropdownManager.current === dropdownId);
 
-	// Watch for changes in the dropdown manager
-	$effect(() => {
-		isDropdownOpen = dropdownManager.current === dropdownId;
-	});
+	let selectWrapperEl: HTMLDivElement;
 
-	function toggleDropdown() {
+	function toggleDropdown(event: MouseEvent) {
+		event.preventDefault();
+		event.stopPropagation();
 		if (!disabled && options.length > 0) {
 			if (dropdownManager.current === dropdownId) {
 				dropdownManager.current = null;
@@ -56,7 +58,9 @@
 		}
 	}
 
-	function selectOption(optionValue: string) {
+	function selectOption(optionValue: string, event: MouseEvent) {
+		event.preventDefault();
+		event.stopPropagation();
 		value = optionValue;
 		dropdownManager.current = null;
 		if (onSelect) {
@@ -69,9 +73,10 @@
 	}
 
 	function handleClickOutside(event: MouseEvent) {
-		if (isDropdownOpen) {
+		if (isDropdownOpen && selectWrapperEl) {
 			const target = event.target as HTMLElement;
-			if (!target.closest('.setting-row')) {
+			// Close only if clicking outside the select wrapper entirely
+			if (!selectWrapperEl.contains(target)) {
 				closeDropdown();
 			}
 		}
@@ -88,7 +93,7 @@
 		<h3>{label}</h3>
 	</div>
 	<div class="row-controls">
-		<div class="select-wrapper">
+		<div class="select-wrapper" bind:this={selectWrapperEl}>
 			<!-- Custom Dropdown Button -->
 			<button
 				class="row-select"
@@ -118,7 +123,7 @@
 						<button
 							class="dropdown-option"
 							class:selected={value === option.value}
-							onclick={() => selectOption(option.value)}
+							onclick={(e) => selectOption(option.value, e)}
 							type="button"
 						>
 							{option.label}

@@ -203,6 +203,46 @@ function initWebSocketServer() {
 					return;
 				}
 
+				// Handle port disconnection request
+				if (data.type === 'disconnect') {
+					try {
+						if (port && port.isOpen) {
+							const closedPort = currentPortPath;
+							await new Promise((resolve) => {
+								port.close(() => resolve());
+							});
+							port = null;
+							currentPortPath = null;
+
+							appendLog(`✓ Serial port ${closedPort} closed`);
+
+							ws.send(JSON.stringify({
+								type: 'disconnected'
+							}));
+
+							// Notify all other clients about the disconnection
+							connectedClients.forEach(client => {
+								if (client !== ws && client.readyState === 1) {
+									client.send(JSON.stringify({
+										type: 'disconnected'
+									}));
+								}
+							});
+						} else {
+							ws.send(JSON.stringify({
+								type: 'disconnected'
+							}));
+						}
+					} catch (error) {
+						appendLog(`Failed to disconnect: ${error.message}`);
+						ws.send(JSON.stringify({
+							type: 'error',
+							message: `Failed to disconnect: ${error.message}`
+						}));
+					}
+					return;
+				}
+
                 if (data.type === 'write' && Array.isArray(data.data)) {
 					if (!port || !port.isOpen) {
 						ws.send(JSON.stringify({
