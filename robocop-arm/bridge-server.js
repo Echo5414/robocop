@@ -8,12 +8,14 @@
 
 import { SerialPort } from 'serialport';
 import { WebSocketServer } from 'ws';
+import express from 'express';
+import cors from 'cors';
 import fs from 'fs';
 import path from 'path';
 
-const SERIAL_PORT = process.env.BRIDGE_SERIAL || 'COM13';
-const BAUD_RATE = Number(process.env.BRIDGE_BAUD || 1000000);
+const DEFAULT_BAUD_RATE = Number(process.env.BRIDGE_BAUD || 1000000);
 const WS_PORT = Number(process.env.BRIDGE_WS_PORT || 8080);
+const HTTP_PORT = Number(process.env.BRIDGE_HTTP_PORT || 8081);
 const VERBOSE = process.env.BRIDGE_VERBOSE === '1';
 const LOG_TO_FILE = process.env.BRIDGE_LOG === '1';
 const LOG_PATH = process.env.BRIDGE_LOG_PATH || path.join(process.cwd(), 'log.txt');
@@ -21,7 +23,10 @@ const LOG_MAX = Number(process.env.BRIDGE_LOG_MAX || 1_000_000); // ~1MB
 
 let port = null;
 let wsServer = null;
+let httpServer = null;
 let connectedClients = new Set();
+let currentPortPath = null;
+let currentBaudRate = DEFAULT_BAUD_RATE;
 
 function appendLog(line) {
     const msg = `[${new Date().toISOString()}] ${line}\n`;
@@ -43,19 +48,29 @@ function appendLog(line) {
 }
 
 // Initialize serial port
-async function initSerialPort() {
+async function initSerialPort(portPath, baudRate) {
 	try {
+		// Close existing port if open
+		if (port && port.isOpen) {
+			await new Promise((resolve) => {
+				port.close(() => resolve());
+			});
+		}
+
 		port = new SerialPort({
-			path: SERIAL_PORT,
-			baudRate: BAUD_RATE,
+			path: portPath,
+			baudRate: baudRate,
 			dataBits: 8,
 			stopBits: 1,
 			parity: 'none',
 			autoOpen: false
 		});
 
+		currentPortPath = portPath;
+		currentBaudRate = baudRate;
+
     port.on('open', () => {
-        appendLog(`✓ Serial port ${SERIAL_PORT} opened at ${BAUD_RATE} baud`);
+        appendLog(`✓ Serial port ${portPath} opened at ${baudRate} baud`);
     });
 
     port.on('data', (data) => {
@@ -88,6 +103,59 @@ async function initSerialPort() {
 	}
 }
 
+// Initialize HTTP server for port listing
+function initHttpServer() {
+	const app = express();
+	app.use(cors());
+	app.use(express.json());
+
+	// List available serial ports
+	app.get('/api/ports', async (req, res) => {
+		try {
+			const ports = await SerialPort.list();
+
+			// Filter to show only likely servo controller ports
+			const filtered = ports.filter(port => {
+				const pathLower = port.path.toLowerCase();
+				const manufacturer = (port.manufacturer || '').toLowerCase();
+
+				// Windows: COM ports
+				if (pathLower.includes('com')) return true;
+
+				// Linux/Mac: tty devices
+				if (pathLower.includes('/dev/tty')) return true;
+
+				// Common USB-Serial chips
+				if (manufacturer.includes('ftdi')) return true;
+				if (manufacturer.includes('ch340')) return true;
+				if (manufacturer.includes('cp210')) return true;
+				if (manufacturer.includes('prolific')) return true;
+
+				return false;
+			});
+
+			appendLog(`Found ${filtered.length} potential serial ports`);
+			res.json(filtered);
+		} catch (error) {
+			appendLog('Error listing ports: ' + error.message);
+			res.status(500).json({ error: error.message });
+		}
+	});
+
+	// Get current connection status
+	app.get('/api/status', (req, res) => {
+		res.json({
+			connected: port && port.isOpen,
+			port: currentPortPath,
+			baudRate: currentBaudRate
+		});
+	});
+
+	httpServer = app.listen(HTTP_PORT, () => {
+		appendLog(`✓ HTTP API listening on http://localhost:${HTTP_PORT}`);
+	});
+}
+
 // Initialize WebSocket server
 function initWebSocketServer() {
     wsServer = new WebSocketServer({ port: WS_PORT });
@@ -96,11 +164,54 @@ function initWebSocketServer() {
         appendLog('✓ Web client connected');
         connectedClients.add(ws);
 
-		ws.on('message', (message) => {
+		ws.on('message', async (message) => {
             try {
                 const data = JSON.parse(message);
 
+				// Handle port connection request
+				if (data.type === 'connect') {
+					const portPath = data.port;
+					const baudRate = data.baud || DEFAULT_BAUD_RATE;
+
+					try {
+						appendLog(`Connecting to ${portPath} @ ${baudRate} baud...`);
+						await initSerialPort(portPath, baudRate);
+
+						ws.send(JSON.stringify({
+							type: 'connected',
+							port: portPath,
+							baudRate: baudRate
+						}));
+
+						// Notify all other clients about the connection
+						connectedClients.forEach(client => {
+							if (client !== ws && client.readyState === 1) {
+								client.send(JSON.stringify({
+									type: 'connected',
+									port: portPath,
+									baudRate: baudRate
+								}));
+							}
+						});
+					} catch (error) {
+						appendLog(`Failed to connect to ${portPath}: ${error.message}`);
+						ws.send(JSON.stringify({
+							type: 'error',
+							message: `Failed to connect to ${portPath}: ${error.message}`
+						}));
+					}
+					return;
+				}
+
                 if (data.type === 'write' && Array.isArray(data.data)) {
+					if (!port || !port.isOpen) {
+						ws.send(JSON.stringify({
+							type: 'error',
+							message: 'Serial port not connected. Please select a port first.'
+						}));
+						return;
+					}
+
                     const buffer = Buffer.from(data.data);
                     if (VERBOSE) appendLog('→ Sending to servo: ' + JSON.stringify(Array.from(buffer)));
 
@@ -129,11 +240,12 @@ function initWebSocketServer() {
             connectedClients.delete(ws);
         });
 
-		// Send connection confirmation
+		// Send connection status (port may not be connected yet)
 		ws.send(JSON.stringify({
-			type: 'connected',
-			port: SERIAL_PORT,
-			baudRate: BAUD_RATE
+			type: 'status',
+			connected: port && port.isOpen,
+			port: currentPortPath,
+			baudRate: currentBaudRate
 		}));
 	});
 
@@ -145,13 +257,13 @@ async function main() {
     appendLog('=== SCServo Serial Bridge Server ===');
 
 	try {
-		await initSerialPort();
+		initHttpServer();
 		initWebSocketServer();
 
         appendLog('✓ Bridge server ready!');
-        appendLog(`  Serial: ${SERIAL_PORT} @ ${BAUD_RATE} baud`);
+        appendLog(`  HTTP API: http://localhost:${HTTP_PORT}`);
         appendLog(`  WebSocket: ws://localhost:${WS_PORT}`);
-        appendLog('Waiting for web client connections...');
+        appendLog('Waiting for web client to select a serial port...');
 
 	} catch (error) {
         appendLog('Failed to start bridge server: ' + (error?.message || String(error)));
@@ -168,6 +280,9 @@ process.on('SIGINT', () => {
     if (wsServer) {
         wsServer.close();
     }
+	if (httpServer) {
+		httpServer.close();
+	}
     process.exit(0);
 });
 

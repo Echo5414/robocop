@@ -234,6 +234,9 @@ const jointOverrides = [];
 	}
 
 	onMount(() => {
+		// Auto-connect to bridge server when component mounts
+		connectToBridge();
+
 		const onVis = () => {
 			if (document.hidden) stopStatusUpdates();
 			else if (isConnected && servos.length) startStatusUpdates();

@@ -66,10 +66,14 @@ export class WebSocketSerial {
 					try {
 						const message = JSON.parse(event.data);
 
-						if (message.type === 'connected') {
+						if (message.type === 'status') {
+							// Initial connection status
+							console.log('✓ Connected to bridge server');
+							this.isConnected = message.connected;
+							resolve();
+						} else if (message.type === 'connected') {
 							console.log(`✓ Bridge connected to ${message.port} @ ${message.baudRate} baud`);
 							this.isConnected = true;
-							resolve();
 						} else if (message.type === 'data') {
 							this.handleIncomingData(new Uint8Array(message.data));
 						} else if (message.type === 'error') {
@@ -114,6 +118,63 @@ export class WebSocketSerial {
 	 */
 	isConnectedToBridge(): boolean {
 		return this.isConnected && this.ws !== null && this.ws.readyState === WebSocket.OPEN;
+	}
+
+	/**
+	 * List available serial ports
+	 */
+	async listPorts(): Promise<any[]> {
+		try {
+			const response = await fetch('http://localhost:8081/api/ports');
+			if (!response.ok) {
+				throw new Error(`HTTP error! status: ${response.status}`);
+			}
+			return await response.json();
+		} catch (error) {
+			console.error('Failed to list ports:', error);
+			throw error;
+		}
+	}
+
+	/**
+	 * Select and connect to a serial port
+	 */
+	async selectPort(portPath: string, baudRate: number = 1000000): Promise<void> {
+		if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+			throw new Error('Not connected to bridge server');
+		}
+
+		return new Promise((resolve, reject) => {
+			const timeout = setTimeout(() => {
+				reject(new Error('Port connection timeout'));
+			}, 5000);
+
+			const messageHandler = (event: MessageEvent) => {
+				try {
+					const message = JSON.parse(event.data);
+					if (message.type === 'connected') {
+						clearTimeout(timeout);
+						this.ws!.removeEventListener('message', messageHandler);
+						this.isConnected = true;
+						resolve();
+					} else if (message.type === 'error') {
+						clearTimeout(timeout);
+						this.ws!.removeEventListener('message', messageHandler);
+						reject(new Error(message.message));
+					}
+				} catch (error) {
+					// Ignore parse errors for other messages
+				}
+			};
+
+			this.ws.addEventListener('message', messageHandler);
+
+			this.ws.send(JSON.stringify({
+				type: 'connect',
+				port: portPath,
+				baud: baudRate
+			}));
+		});
 	}
 
 	/**
@@ -341,6 +402,51 @@ export class WebSocketSerial {
 	async setTorqueEnable(id: number, enable: boolean): Promise<void> {
 		const packet = createWritePacket(id, MemoryAddress.TORQUE_ENABLE, [enable ? 1 : 0]);
 		await this.sendAndWait(packet, id);
+	}
+
+	/**
+	 * Read servo ID from EPROM
+	 */
+	async readServoId(id: number): Promise<number> {
+		const packet = createReadPacket(id, MemoryAddress.ID, 1);
+		const response = await this.sendAndWait(packet, id);
+
+		if (!response.valid || response.parameters.length < 1) {
+			throw new Error('Failed to read servo ID');
+		}
+
+		return response.parameters[0];
+	}
+
+	/**
+	 * Write new servo ID to EPROM
+	 * WARNING: This changes the servo's ID permanently!
+	 */
+	async writeServoId(currentId: number, newId: number): Promise<void> {
+		if (newId < 0 || newId > 253) {
+			throw new Error('ID must be between 0 and 253');
+		}
+
+		const packet = createWritePacket(currentId, MemoryAddress.ID, [newId]);
+		await this.sendAndWait(packet, currentId);
+	}
+
+	/**
+	 * Scan all possible IDs to find servos
+	 */
+	async scanAllIds(startId: number = 0, endId: number = 253): Promise<number[]> {
+		const foundServos: number[] = [];
+
+		for (let id = startId; id <= endId; id++) {
+			const online = await this.ping(id);
+			if (online) {
+				foundServos.push(id);
+			}
+			// Small delay to avoid overwhelming the bus
+			await new Promise(resolve => setTimeout(resolve, 10));
+		}
+
+		return foundServos;
 	}
 
 	getStats() {

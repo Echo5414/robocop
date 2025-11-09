@@ -1,20 +1,33 @@
 <script lang="ts">
 	import '../app.css';
+	import { page } from '$app/stores';
+
+	const tabs = [
+		{ label: 'Servo Setup', href: '/' },
+		{ label: 'Calibration', href: '/calibration' },
+		{ label: 'Visualization', href: '/visualization' }
+	];
 </script>
 
 <div class="app">
 	<header>
-		<h1>RoboCop Arm Controller</h1>
-		<p>Open Source Servo Control for LeRobot SO-101</p>
+		<h1 class="logo">robodesk</h1>
+		<nav class="tabs">
+			{#each tabs as tab}
+				<a
+					href={tab.href}
+					class="tab"
+					class:active={$page.url.pathname === tab.href}
+				>
+					{tab.label}
+				</a>
+			{/each}
+		</nav>
 	</header>
 
 	<main>
 		<slot />
 	</main>
-
-	<footer>
-		<p>Powered by Web Serial API | STS3215 Servos</p>
-	</footer>
 </div>
 
 <style>
@@ -22,39 +35,46 @@
 		display: flex;
 		flex-direction: column;
 		min-height: 100vh;
-		background: #1a1a1a;
-		color: #e0e0e0;
+		background: var(--color-grey-900);
+		color: var(--color-grey-100);
 	}
 
 	header {
-		background: #2a2a2a;
-		padding: 1.5rem 2rem;
-		border-bottom: 2px solid #3a3a3a;
+		display: flex;
+		align-items: center;
+		gap: var(--spacing-12);
+		padding: var(--spacing-6) var(--spacing-8);
+		background: var(--color-grey-900);
 	}
 
-	header h1 {
-		margin: 0;
-		font-size: 2rem;
-		color: #4a9eff;
+	.logo {
+		color: var(--color-primary-500);
 	}
 
-	header p {
-		margin: 0.5rem 0 0 0;
-		color: #999;
-		font-size: 0.9rem;
+	.tabs {
+		font-weight: var(--font-weight-medium);
+		display: flex;
+		gap: var(--spacing-8);
+	}
+
+	.tab {
+		color: var(--color-grey-500);
+		text-decoration: none;
+		transition: color var(--transition-base);
+		cursor: pointer;
+		padding: var(--spacing-2) 0;
+	}
+
+	.tab:hover {
+		color: var(--color-grey-100);
+	}
+
+	.tab.active {
+		color: var(--color-grey-100);
 	}
 
 	main {
 		flex: 1;
-		padding: 2rem;
-	}
-
-	footer {
-		background: #2a2a2a;
-		padding: 1rem 2rem;
-		border-top: 2px solid #3a3a3a;
-		text-align: center;
-		color: #666;
-		font-size: 0.85rem;
+		padding: 0;
 	}
 </style>
