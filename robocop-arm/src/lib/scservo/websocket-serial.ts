@@ -570,6 +570,17 @@ export class WebSocketSerial {
 		await this.sendAndWait(packet, id);
 	}
 
+	async readAmax(id: number): Promise<number> {
+		const packet = createReadPacket(id, MemoryAddress.AMAX, 1);
+		const response = await this.sendAndWait(packet, id);
+
+		if (!response.valid || response.parameters.length < 1) {
+			throw new Error('Failed to read Amax');
+		}
+
+		return response.parameters[0];
+	}
+
 	/**
 	 * Scan all possible IDs to find servos
 	 */

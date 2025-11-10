@@ -25,6 +25,7 @@
 	// Servo configuration state
 	let isConfiguringServo = $state(false);
 	let detectedServoId = $state<number | null>(null);
+	let detectedAmax = $state<number | null>(null); // Original Amax value for placeholder
 	let configServoId = $state('');
 	let configAmax = $state('');
 	let additionalParameters = $state<Array<{id: string, name: string, value: string}>>([]);
@@ -117,10 +118,21 @@
 				// Mark port as connected
 				isPortConnected = true;
 
-				// Found a servo - show configuration card
-				detectedServoId = foundIds[0];
-				configServoId = foundIds[0].toString();
-				configAmax = '254'; // Default Amax value
+				// Found a servo - read current configuration
+				const servoId = foundIds[0];
+				detectedServoId = servoId;
+
+				// Read current Amax value from servo
+				try {
+					detectedAmax = await serial.readAmax(servoId);
+				} catch (error) {
+					console.warn('Failed to read Amax, using default placeholder:', error);
+					detectedAmax = null;
+				}
+
+				// Pre-fill with detected ID and recommended Amax (254)
+				configServoId = servoId.toString();
+				configAmax = '254'; // Recommended Amax value
 				additionalParameters = []; // Start with no additional parameters
 				isConfiguringServo = true;
 			} else {
@@ -184,6 +196,7 @@
 			isConfiguringServo = false;
 			isPortConnected = false;
 			detectedServoId = null;
+			detectedAmax = null;
 			configServoId = '';
 			configAmax = '';
 			additionalParameters = [];
@@ -331,6 +344,7 @@
 					label="Servo ID"
 					icon="hugeicons:square-arrow-data-transfer-horizontal"
 					bind:value={configServoId}
+					placeholder={detectedServoId !== null ? `Current: ${detectedServoId}` : ''}
 					type="number"
 					removable={false}
 				/>
@@ -340,6 +354,7 @@
 					label="Amax"
 					icon="hugeicons:square-arrow-data-transfer-horizontal"
 					bind:value={configAmax}
+					placeholder={detectedAmax !== null ? `Current: ${detectedAmax}` : ''}
 					type="number"
 					removable={false}
 				/>
